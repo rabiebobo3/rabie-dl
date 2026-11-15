@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg">#06080F</color>
+    <color name="bgdark">#0A0E18</color>
+    <color name="card">#0D1322</color>
+    <color name="field">#0A0F1B</color>
+    <color name="border">#232B3D</color>
+    <color name="gold">#E6C15A</color>
+    <color name="textMain">#C6D0E2</color>
+    <color name="textSub">#AAB4C8</color>
+    <color name="textDim">#7A869C</color>
+    <color name="green">#3EC46D</color>
+    <color name="red">#E07A7A</color>
+    <color name="gray">#7A869C</color>
+</resources>
