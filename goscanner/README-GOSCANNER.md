@@ -27,3 +27,9 @@ go build -o goscanner main.go
 # Threads: 50-200
 ```
 النتائج في `Hits/go_hits.txt`
+
+
+## v2.2 — إعادة المحاولة عند 429 (Rate-Limit)
+- كل الطلبات تعيد المحاولة تلقائياً حتى 3 مرات عند HTTP 429/503 مع احترام ترويسة Retry-After (handshake / get_profile / get_all_channels / player_api / اكتشاف endpoints)
+- عند استمرار 429 بعد المحاولات يظهر السبب: `[i] MAC → profile: status code: 429 (rate limited, retried 2 times)`
+- البانر يعرض v2.2 للتأكد أن التحديث دخل للهاتف
