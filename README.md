@@ -1,25 +1,24 @@
-# روابط التحميل — RabieTV2 التجريبية
+# روابط التحميل — RabieTV2 + لوحة الإدارة
 
-## v115 «5.82-pre-exp» (الأحدث — ثبّت هذه) ✅
-[⬇️ تحميل RabieTV2-v115-pre-exp.apk](RabieTV2-v115-pre-exp.apk?raw=true)
+## 🛟 Rabie-Admin v1.8.0 «Rescue» — لوحة 2: الروابط الاحتياطية (الأحدث) ✅
+[⬇️ تحميل Rabie-Admin-v1.8.0-rescue.apk](Rabie-Admin-v1.8.0-rescue.apk?raw=true)
 
-**الجديد ⚡**: التحميل المسبق — بعد نجاح أي قناة يجهّز روابط جارتيها من نفس المجموعة خلف الكواليس؛ عند التنقل إليها: «⚡ جاهز مسبقاً — تشغيل فوري» بلا انتظار البوابة.
+**الجديد**: بند «🛟 الروابط الاحتياطية — سرفر المنقذ» — أقسام (جزائرية/عربية/رياضية/أي قسم تنشئه) لكل قسم قنوات، وكل قناة: أسماء بديلة + لوقو + 4 روابط مرتبة + ترتيب ▲▼ + تعديل/حذف. تثبيت مباشر فوق v1.7.1 (نفس التوقيع، تسجيل دخولك نفسه).
 
-**🧠 الذاكرة (v114 مضمّنة)**: يتذكر أي سرفر نجح لكل قناة ويعاود به أولاً + زر «🖥️ إدارة السيرفرات» في الإعدادات (v113) + البديل الظلي العابر للسرفرات (v112).
+## RabieTV2 v115 «5.82-pre-exp»
+[⬇️ RabieTV2-v115-pre-exp.apk](RabieTV2-v115-pre-exp.apk?raw=true) — تحميل مسبق + ذاكرة + بديل ظلي
 
-**الإعداد مرة واحدة**: الإعدادات ← 🖥️ إدارة السيرفرات ← ➕ إضافة ← Xtream ← (ALWAN: bouygues.r1v.us:8080 / 190450699530340 / yW3DuvOfaolCA1d) ← حفظ بدون تفعيل.
-
-## v114 «5.81-mem-exp»
+## RabieTV2 v114 «5.81-mem-exp»
 [⬇️ RabieTV2-v114-mem-exp.apk](RabieTV2-v114-mem-exp.apk?raw=true)
 
-## v113 «5.80-srvui-exp»
+## RabieTV2 v113 «5.80-srvui-exp»
 [⬇️ RabieTV2-v113-srvui-exp.apk](RabieTV2-v113-srvui-exp.apk?raw=true)
 
-## v112 «5.79-xserver-exp»
+## RabieTV2 v112 «5.79-xserver-exp»
 [⬇️ RabieTV2-v112-xserver-exp.apk](RabieTV2-v112-xserver-exp.apk?raw=true)
 
-## v111 «5.78-shadow-exp2»
+## RabieTV2 v111 «5.78-shadow-exp2»
 [⬇️ RabieTV2-v111-shadow-exp2.apk](RabieTV2-v111-shadow-exp2.apk?raw=true)
 
-## v110 «5.77-shadow-exp»
+## RabieTV2 v110 «5.77-shadow-exp»
 [⬇️ RabieTV2-v110-shadow-exp.apk](RabieTV2-v110-shadow-exp.apk?raw=true)
