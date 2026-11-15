@@ -21,6 +21,7 @@ import (
 // 2) مسار البوابة: يجرّب base+/c تلقائياً + /c/server/load.php (بواباتك كلها /c)
 // 3) HIT حقيقي: الرد المقفول (js.msg) لا يُعد HIT + عدّ القنوات فعلياً (get_all_channels)
 // 4) إحصائيات صادقة: AuthFail منفصلة عن NetworkFail
+// 5) v2.2: إعادة المحاولة عند 429/503 (Rate-Limit) مع احترام Retry-After
 
 func syncAndClose(file *os.File) error {
 	if file == nil {
@@ -177,7 +178,7 @@ func searchPortalEndpoint(portalURL string, client *http.Client) (string, string
 			}
 			req.Header.Set("User-Agent", "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/537.36 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 2721 Mobile Safari/537.36")
 
-			resp, err := client.Do(req)
+			resp, err := doWithRetry(client, req)
 			if err != nil {
 				continue
 			}
@@ -278,6 +279,33 @@ func getProxyTransport() *http.Transport {
 	return tr
 }
 
+// ── v2.2: إعادة المحاولة التلقائية عند 429/503 (البوابة تحدد المعدل) ──
+func doWithRetry(client *http.Client, req *http.Request) (*http.Response, error) {
+	const maxAttempts = 3
+	var resp *http.Response
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		resp, err = client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusServiceUnavailable {
+			return resp, nil
+		}
+		wait := time.Duration(attempt) * 1200 * time.Millisecond
+		if ra := strings.TrimSpace(resp.Header.Get("Retry-After")); ra != "" {
+			if secs, pErr := strconv.Atoi(ra); pErr == nil && secs > 0 && secs <= 10 {
+				wait = time.Duration(secs) * time.Second
+			}
+		}
+		resp.Body.Close()
+		if attempt < maxAttempts {
+			time.Sleep(wait)
+		}
+	}
+	return nil, fmt.Errorf("status code: %d (rate limited, retried %d times)", resp.StatusCode, maxAttempts-1)
+}
+
 func hea1(portalURL, mac string) map[string]string {
 	macs := strings.ToUpper(mac)
 	return map[string]string{
@@ -317,7 +345,7 @@ func performHandshake(client *http.Client, portalURL, endpoint, mac string) (str
 		req.Header.Set(k, v)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := doWithRetry(client, req)
 	if err != nil {
 		return "", err
 	}
@@ -364,7 +392,7 @@ func performGetProfile(client *http.Client, portalURL, endpoint, mac, token stri
 		req.Header.Set(k, v)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := doWithRetry(client, req)
 	if err != nil {
 		return nil, err
 	}
@@ -393,7 +421,7 @@ func fetchChannelsCount(client *http.Client, portalURL, endpoint, mac, token str
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := client.Do(req)
+	resp, err := doWithRetry(client, req)
 	if err != nil {
 		return 0
 	}
@@ -419,7 +447,7 @@ func fetchPlayerAPI(client *http.Client, portalURL, mac, token string) string {
 		req.Header.Set(k, v)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := doWithRetry(client, req)
 	if err != nil {
 		return ""
 	}
@@ -455,7 +483,7 @@ func main() {
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Println("==================================================")
-	fmt.Println("   ⚡ GO STALKER PRO - v2 FIXED ⚡                 ")
+	fmt.Println("   ⚡ GO STALKER PRO - v2.2     ⚡                 ")
 	fmt.Println("==================================================")
 
 	fmt.Print("Enter Portal URL (e.g. http://example.com:8080[/c]): ")
