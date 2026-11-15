@@ -285,7 +285,6 @@ func hea1(portalURL, mac string) map[string]string {
 		"Referer":         portalURL + "/c/",
 		"Accept":          "application/json,application/javascript,text/javascript,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 		"Cookie":          "mac=" + url.QueryEscape(macs) + "; stb_lang=en; timezone=Europe%2FParis;",
-		"Accept-Encoding": "gzip, deflate",
 		"Connection":      "Keep-Alive",
 		"X-User-Agent":    "Model: MAG254; Link: Ethernet",
 	}
@@ -298,7 +297,6 @@ func hea2(mac, token string) map[string]string {
 		"Referer":         "/c/",
 		"Accept":          "application/json,application/javascript,text/javascript,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 		"Cookie":          "mac=" + url.QueryEscape(macs) + "; stb_lang=en; timezone=Europe%2FParis;",
-		"Accept-Encoding": "gzip, deflate",
 		"Connection":      "Keep-Alive",
 		"X-User-Agent":    "Model: MAG254; Link: Ethernet",
 		"Authorization":   "Bearer " + token,
@@ -436,7 +434,7 @@ func fetchPlayerAPI(client *http.Client, portalURL, mac, token string) string {
 func printSummary(
 	duration time.Duration,
 	read, invalid, processed, hits int64,
-	networkFails, authFails, structureFails, blocked, ioFails int64,
+	networkFails, authFails, structureFails, blocked, ghost, ioFails int64,
 ) {
 	fmt.Println("\n========== PROJECT SUMMARY ==========")
 	fmt.Printf("Duration          : %v\n", duration)
@@ -445,6 +443,7 @@ func printSummary(
 	fmt.Printf("Processed         : %d\n", processed)
 	fmt.Printf("Successful Hits   : %d\n", hits)
 	fmt.Printf("Blocked/Invalid   : %d\n", blocked)
+	fmt.Printf("Ghost/NoData      : %d\n", ghost)
 	fmt.Printf("Network Errors    : %d\n", networkFails)
 	fmt.Printf("Auth Failures     : %d\n", authFails)
 	fmt.Printf("Structure Errors  : %d\n", structureFails)
@@ -549,6 +548,8 @@ func main() {
 	var readCount atomic.Int64
 	var workerAttemptCount atomic.Int64
 	var invalidMacCount atomic.Int64
+	var ghostCount atomic.Int64
+	var printedFail atomic.Int64
 	var mutex sync.Mutex
 
 	macChan := make(chan string, 5000)
@@ -576,6 +577,9 @@ func main() {
 						authFailCount.Add(1)
 					} else {
 						networkFailCount.Add(1)
+						if printedFail.Add(1) <= 20 {
+							fmt.Println("[i] " + mac + " → handshake: " + err.Error())
+						}
 					}
 					if useProxy {
 						client.Transport = getProxyTransport()
@@ -585,7 +589,14 @@ func main() {
 
 				profileResult, err := performGetProfile(client, portalBase, endpoint, mac, authToken)
 				if err != nil {
-					networkFailCount.Add(1)
+					if strings.Contains(err.Error(), "json") || strings.Contains(err.Error(), "invalid character") {
+						responseStructureFailCount.Add(1)
+					} else {
+						networkFailCount.Add(1)
+					}
+					if printedFail.Add(1) <= 20 {
+						fmt.Println("[i] " + mac + " → profile: " + err.Error())
+					}
 					continue
 				}
 
@@ -611,6 +622,23 @@ func main() {
 					}
 					if strings.TrimSpace(msgS) != "" {
 						blockedCount.Add(1)
+						continue
+					}
+
+					hasReal := false
+					if expVal0, exists0 := dataMap["exp_date"]; exists0 && expVal0 != nil {
+						if _, ok0 := parseExpirationDate(expVal0); ok0 {
+							hasReal = true
+						}
+					}
+					if st0, ok1 := dataMap["status"].(string); ok1 && strings.TrimSpace(st0) != "" {
+						hasReal = true
+					}
+					if id0, ok2 := dataMap["id"].(float64); ok2 && id0 > 0 {
+						hasReal = true
+					}
+					if !hasReal {
+						ghostCount.Add(1)
 						continue
 					}
 
@@ -703,6 +731,7 @@ func main() {
 		authFailCount.Load(),
 		responseStructureFailCount.Load(),
 		blockedCount.Load(),
+		ghostCount.Load(),
 		ioFailCount.Load(),
 	)
 }
