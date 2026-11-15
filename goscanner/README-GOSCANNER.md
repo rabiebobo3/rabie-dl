@@ -33,3 +33,10 @@ go build -o goscanner main.go
 - كل الطلبات تعيد المحاولة تلقائياً حتى 3 مرات عند HTTP 429/503 مع احترام ترويسة Retry-After (handshake / get_profile / get_all_channels / player_api / اكتشاف endpoints)
 - عند استمرار 429 بعد المحاولات يظهر السبب: `[i] MAC → profile: status code: 429 (rate limited, retried 2 times)`
 - البانر يعرض v2.2 للتأكد أن التحديث دخل للهاتف
+
+
+## v2.3 — كشف الاشتراكات المخفية (account_info)
+- بعض البوابات (مثل dragoniptv.de) تُرجع قالباً فارغاً (id:0) في get_profile حتى للاشتراكات العايشة!
+- الحل: بعد get_profile يُسأل `type=account_info&action=get_main_info` — إن وُجد تاريخ في phone أو end_date → HIT
+- دعم تواريخ بأشكال متعددة (مثل: November 25, 2026, 1:41 am) مع حساب الأيام المتبقية
+- الشبح يُحسم فقط بعد أن يجيب account_info بلا أي تاريخ
