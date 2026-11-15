@@ -1,0 +1,46 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.rabie.mascanner'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.rabie.mascanner"
+        minSdk 21
+        targetSdk 34
+        versionCode 3
+        versionName "1.2"
+    }
+
+    signingConfigs {
+        rabieSign {
+            storeFile file('../rabie.keystore')
+            storePassword 'Rabie@2025'
+            keyAlias 'rabiekey'
+            keyPassword 'Rabie@2025'
+        }
+    }
+
+    buildTypes {
+        debug { signingConfig signingConfigs.rabieSign }
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.rabieSign
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+}
+
+dependencies {
+}
