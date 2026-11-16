@@ -81,6 +81,7 @@ class MainActivity : Activity() {
     private lateinit var hitsList: LinearLayout
     private lateinit var btnShare: Button
     private lateinit var btnAgain: Button
+    private lateinit var etXtream: EditText
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -195,6 +196,7 @@ class MainActivity : Activity() {
         btnGenMacs = findViewById(R.id.btnGenMacs)
         etGenCount = findViewById(R.id.etGenCount)
         btnGenMacs.setOnClickListener { genMacs() }
+        etXtream = findViewById(R.id.etXtream)
         btnXtream = findViewById(R.id.btnXtream)
         btnXtream.setOnClickListener { startXtream() }
 
@@ -328,7 +330,13 @@ class MainActivity : Activity() {
         }
         val parsed = currentMacList()
         if (parsed.first.isEmpty()) {
-            toast("📄 لا توجد MACs صالحة — اختر ملف أو الصق ماكات")
+            val probe = etPaste.text?.toString() ?: ""
+            if (probe.contains("username=") || probe.contains("user=") ||
+                Regex("\\w{2}:\\w{2}:\\w{2}:\\w{2}:\\w{2}:\\w{2}").containsMatchIn(probe).not() && probe.contains("|")) {
+                toast("🔗 هذا رابط/حساب Xtream — استعمل حقل 🔗 فحص Xtream في الأسفل")
+            } else {
+                toast("📄 لا توجد MACs صالحة — اختر ملف أو الصق ماكات")
+            }
             return
         }
         val t = etThreads.text?.toString()?.trim()?.toIntOrNull() ?: 50
@@ -392,10 +400,14 @@ class MainActivity : Activity() {
     // ═══════════ v1.6: وضع Xtream (روابط M3U / user:pass) ═══════════
     private fun startXtream() {
         if (running.get()) return
-        val raw = etPaste.text?.toString() ?: ""
+        val raw = (etXtream.text?.toString()?.trim() ?: "").ifEmpty { etPaste.text?.toString()?.trim() ?: "" }
         val entries = parseXtreamEntries(raw)
         if (entries.isEmpty()) {
-            toast("الصق روابط M3U (username=&password=) أو سطور: host:port|user|pass")
+            if (Regex("\\w{2}:\\w{2}:\\w{2}:\\w{2}:\\w{2}:\\w{2}").containsMatchIn(raw)) {
+                toast("📝 هذه ماكات — اكتبها في خانة الماكات واضغط ⚡ ابدأ الفحص")
+            } else {
+                toast("الصق روابط M3U (username=&password=) أو سطور host:port|user|pass في الحقل فوق الزر")
+            }
             return
         }
         val t = etThreads.text?.toString()?.trim()?.toIntOrNull() ?: 10
@@ -747,6 +759,7 @@ class MainActivity : Activity() {
             val idOk = idNum is Number && idNum.toDouble() > 0
             var expStr = "Unknown"
             var remStr = "N/A"
+            var mag270 = false
             if (expMs != null) {
                 val df = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
                 expStr = df.format(Date(expMs))
@@ -781,6 +794,7 @@ class MainActivity : Activity() {
                             } else {
                                 expStr = "مفحوص (MAG270)"
                                 remStr = "N/A"
+                                mag270 = true
                             }
                         }
                     }
@@ -816,6 +830,12 @@ class MainActivity : Activity() {
             var item = HitItem(mac, "ينتهي " + expStr + " · متبقٍ " + remStr + " · " + ch + " قناة", dotFor(remStr), "", "", "", "", "", "", "", "", "")
             var m3uLine = ""
             val m3u = extractM3u(portal, ep, mac, token, firstCid)
+            // ── v1.8: فلتر البلايص الفارغة — بلا تاريخ + بلا قنوات + بلا M3U = شبح ──
+            if ((expStr == "Unknown" || mag270) && ch == 0 && m3u == null) {
+                cGhost.incrementAndGet()
+                addLog("[GHOST] " + mac + " — بلايصة فارغة (بلا تاريخ وبلا قنوات)")
+                return
+            }
             if (m3u != null) {
                 cM3u.incrementAndGet()
                 val si = serverInfo(m3u.realHost, m3u.user, m3u.pass)
