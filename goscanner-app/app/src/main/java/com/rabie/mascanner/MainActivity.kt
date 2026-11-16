@@ -87,6 +87,7 @@ class MainActivity : Activity() {
     private lateinit var cbGeo: android.widget.CheckBox
     private lateinit var etMinDays: EditText
     private lateinit var btnGenMacs: Button
+    private lateinit var btnXtream: Button
     private lateinit var etGenCount: EditText
     private val proxyList = ArrayList<String>()
     private val proxyIdx = AtomicInteger(0)
@@ -193,6 +194,8 @@ class MainActivity : Activity() {
         btnGenMacs = findViewById(R.id.btnGenMacs)
         etGenCount = findViewById(R.id.etGenCount)
         btnGenMacs.setOnClickListener { genMacs() }
+        btnXtream = findViewById(R.id.btnXtream)
+        btnXtream.setOnClickListener { startXtream() }
 
         btnShare.setOnClickListener { shareResults() }
         btnAgain.setOnClickListener { showScreen(1) }
@@ -382,6 +385,232 @@ class MainActivity : Activity() {
             tvCNet.text = cNet.get().toString()
             tvGhost.text = "👻 شبح/بلا بيانات: " + cGhost.get() + " · 🔑 فشل توثيق: " + cAuth.get()
             handler.postDelayed(this, 400)
+        }
+    }
+
+    // ═══════════ v1.6: وضع Xtream (روابط M3U / user:pass) ═══════════
+    private fun startXtream() {
+        if (running.get()) return
+        val raw = etPaste.text?.toString() ?: ""
+        val entries = parseXtreamEntries(raw)
+        if (entries.isEmpty()) {
+            toast("الصق روابط M3U (username=&password=) أو سطور: host:port|user|pass")
+            return
+        }
+        val t = etThreads.text?.toString()?.trim()?.toIntOrNull() ?: 10
+        threadsCount = if (t < 1) 10 else if (t > 100) 100 else t
+        proxyObj = null
+        proxyList.clear()
+        for (ln in (etProxy.text?.toString() ?: "").split("\n")) {
+            val tt = ln.trim()
+            if (tt.isNotEmpty()) {
+                val pp = parseProxy(tt)
+                if (pp != null) {
+                    proxyList.add(tt)
+                    proxyObj = pp
+                }
+            }
+        }
+        geoOn = false
+        minDays = 0
+        totalValid = entries.size
+        invalidCount = 0
+
+        cProcessed.set(0); cHits.set(0); cBlocked.set(0); cGhost.set(0)
+        cNet.set(0); cAuth.set(0); cStruct.set(0); cIO.set(0)
+        printedReasons.set(0)
+        cM3u.set(0); cExpFiltered.set(0)
+        synchronized(logLock) { logLines.clear() }
+        synchronized(hitLock) { hits.clear(); hitItems.clear() }
+        handler.post { tvLog.text = "" }
+
+        tvRunPortal.text = "🔗 فحص Xtream — " + entries.size + " حساب"
+        pbProgress.progress = 0
+        tvProgress.text = "0 / " + totalValid + " — 0%"
+        tvCHits.text = "0"; tvCBlocked.text = "0"; tvCNet.text = "0"
+        tvGhost.text = "👻 شبح: 0 · 🔑 توثيق: 0"
+        showScreen(2)
+
+        running.set(true)
+        stopFlag.set(false)
+        startTime = System.currentTimeMillis()
+        handler.post(uiTick)
+        Thread { xtreamEngine(entries) }.start()
+    }
+
+    private fun parseXtreamEntries(raw: String): List<Triple<String, String, String>> {
+        val out = ArrayList<Triple<String, String, String>>()
+        var curServer = ""
+        var curUser = ""
+        var curPass = ""
+        fun flush() {
+            if (curServer.isNotEmpty() && curUser.isNotEmpty() && curPass.isNotEmpty()) {
+                out.add(Triple(curServer, curUser, curPass))
+            }
+        }
+        for (ln0 in raw.split("\n")) {
+            val ln = ln0.trim().replace("\r", "")
+            if (ln.isEmpty() || ln.startsWith("#")) continue
+            if (ln.startsWith("http://", true) || ln.startsWith("https://", true)) {
+                if (ln.contains("username=") || ln.contains("user=")) {
+                    try {
+                        val u = Uri.parse(ln)
+                        val user = u.getQueryParameter("username") ?: u.getQueryParameter("user") ?: ""
+                        val pass = u.getQueryParameter("password") ?: u.getQueryParameter("pass") ?: ""
+                        if (user.isNotEmpty() && pass.isNotEmpty()) {
+                            val port = if (u.port > 0) u.port else (if (u.scheme == "https") 443 else 80)
+                            out.add(Triple(u.host + ":" + port, user, pass))
+                        }
+                    } catch (e: Exception) {
+                    }
+                } else {
+                    flush()
+                    curServer = ln.trimEnd('/')
+                    curUser = ""
+                    curPass = ""
+                }
+                continue
+            }
+            val lower = ln.lowercase(Locale.US)
+            if (lower.startsWith("user")) {
+                curUser = ln.substringAfter("=", "").trim()
+            } else if (lower.startsWith("pass")) {
+                curPass = ln.substringAfter("=", "").trim()
+            } else if (ln.contains("|")) {
+                val p = ln.split("|")
+                if (p.size >= 3) out.add(Triple(p[0].trim(), p[1].trim(), p[2].trim()))
+            } else if (ln.contains(" ")) {
+                val p = ln.split(Regex("\\s+"))
+                if (p.size >= 3) out.add(Triple(p[0].trim(), p[1].trim(), p[2].trim()))
+            }
+        }
+        flush()
+        return out
+    }
+
+    private fun xtreamEngine(entries: List<Triple<String, String, String>>) {
+        try {
+            try {
+                val dir = File(getExternalFilesDir(null), "Hits")
+                if (!dir.exists()) dir.mkdirs()
+                val f = File(dir, "go_hits.txt")
+                if (!f.exists()) f.createNewFile()
+                hitsFileObj = f
+            } catch (e: Exception) {
+                hitsFileObj = null
+            }
+            val poolLocal = ThreadPoolExecutor(
+                threadsCount, threadsCount, 0L, TimeUnit.MILLISECONDS,
+                LinkedBlockingQueue<Runnable>(300),
+                ThreadPoolExecutor.CallerRunsPolicy()
+            )
+            pool = poolLocal
+            for (e in entries) {
+                if (stopFlag.get()) break
+                try {
+                    poolLocal.execute { xtreamOne(e.first, e.second, e.third) }
+                } catch (re: RejectedExecutionException) {
+                    break
+                }
+            }
+            poolLocal.shutdown()
+            poolLocal.awaitTermination(3, TimeUnit.HOURS)
+        } catch (e: Exception) {
+            addLog("[-] " + (e.message ?: e.toString()))
+        } finally {
+            handler.post { finishRun() }
+        }
+    }
+
+    private fun xtreamOne(server: String, user: String, pass: String) {
+        cProcessed.incrementAndGet()
+        try {
+            var hostPart = server
+            var scheme = "http"
+            if (hostPart.startsWith("https://", true)) {
+                scheme = "https"
+                hostPart = hostPart.substring(8)
+            } else if (hostPart.startsWith("http://", true)) {
+                hostPart = hostPart.substring(7)
+            }
+            hostPart = hostPart.trimEnd('/')
+            val apiBase = scheme + "://" + hostPart + "/player_api.php?username=" +
+                URLEncoder.encode(user, "UTF-8") + "&password=" + URLEncoder.encode(pass, "UTF-8")
+            val r = httpRetry(apiBase, mapOf("User-Agent" to UA), 10000)
+            if (r.code != 200) {
+                cNet.incrementAndGet()
+                addReason(user + "@" + hostPart, "player_api", "status " + r.code)
+                return
+            }
+            val root = JSONObject(r.body)
+            val ui = root.optJSONObject("user_info")
+            val status = ui?.optString("status", "")?.trim() ?: ""
+            val expRaw = ui?.optString("exp_date", "0")?.trim() ?: "0"
+            val acon = ui?.optString("active_cons", "")?.trim() ?: ""
+            val mcon = ui?.optString("max_connections", "")?.trim() ?: ""
+            val isTrial = ui?.optString("is_trial", "0")?.trim() ?: "0"
+            if (status.isEmpty()) {
+                cStruct.incrementAndGet()
+                addReason(user + "@" + hostPart, "parse", "no user_info")
+                return
+            }
+            if (status != "Active") {
+                cBlocked.incrementAndGet()
+                addLog("[X] " + hostPart + " | " + user + " | " + status)
+                return
+            }
+            var expStr = "Unlimited"
+            var expired = false
+            val expL = expRaw.toLongOrNull() ?: 0L
+            if (expL > 0) {
+                expStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(expL * 1000))
+                if (expL * 1000 < System.currentTimeMillis()) expired = true
+            }
+            if (expired) {
+                cBlocked.incrementAndGet()
+                addLog("[X] " + hostPart + " | " + user + " | Expired " + expStr)
+                return
+            }
+            val remStr = if (expL > 0) calcRemaining(expL * 1000) else "N/A"
+            val si = serverInfo(hostPart, user, pass)
+            val counts = if (si != null) {
+                (if (si.conn.isNotEmpty()) si.conn + "\n" else "") +
+                    "📺 TV: " + si.live + " · 🎬 أفلام: " + si.vod + " · 📺 مسلسلات: " + si.series
+            } else ""
+            val genres = si?.genres ?: ""
+            val base = scheme + "://" + hostPart
+            val m3uPlus = base + "/get.php?username=" + URLEncoder.encode(user, "UTF-8") +
+                "&password=" + URLEncoder.encode(pass, "UTF-8") + "&type=m3u_plus"
+            val m3u8 = m3uPlus + "&output=m3u8"
+            val epg = base + "/xmltv.php?username=" + URLEncoder.encode(user, "UTF-8") +
+                "&password=" + URLEncoder.encode(pass, "UTF-8") + "&type=xml_plus"
+            val trial = if (isTrial == "1") " · تجريبي" else ""
+            val info = "✅ Active" + trial + " · ينتهي " + expStr + " · متبقٍ " + remStr +
+                (if (mcon.isNotEmpty()) " · اتصالات " + (if (acon.isEmpty()) "?" else acon) + "/" + mcon else "")
+            val line = "[XHIT] " + base + " | User: " + user + " | Pass: " + pass +
+                " | Expire: " + expStr + " | " + status +
+                (if (si != null) " | TV:" + si.live + " VOD:" + si.vod + " SER:" + si.series else "")
+            synchronized(hitLock) {
+                try {
+                    val f = hitsFileObj
+                    if (f != null) f.appendText(line + "\n")
+                } catch (e: Exception) {
+                    cIO.incrementAndGet()
+                }
+                hits.add(line)
+                hitItems.add(HitItem(user + " @ " + hostPart, info, "🟢", m3uPlus, m3u8, epg, counts, genres, "", user, pass, hostPart))
+            }
+            try {
+                val tg = ToneGenerator(AudioManager.STREAM_MUSIC, 85)
+                tg.startTone(ToneGenerator.TONE_PROP_ACK, 180)
+            } catch (e: Exception) {
+            }
+            cHits.incrementAndGet()
+            addLog(line)
+        } catch (je: JSONException) {
+            cStruct.incrementAndGet()
+        } catch (e: Exception) {
+            cNet.incrementAndGet()
         }
     }
 
