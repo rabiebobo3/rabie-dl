@@ -21,6 +21,7 @@ import android.widget.TextView
 import android.widget.Toast
 import java.io.File
 import java.net.HttpURLConnection
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.URL
@@ -585,11 +586,15 @@ class MainActivity : Activity() {
             val epg = base + "/xmltv.php?username=" + URLEncoder.encode(user, "UTF-8") +
                 "&password=" + URLEncoder.encode(pass, "UTF-8") + "&type=xml_plus"
             val trial = if (isTrial == "1") " · تجريبي" else ""
+            // ── v1.7: دولة السيرفر نفسه ──
+            val geo = geoOf(hostPart)
             val info = "✅ Active" + trial + " · ينتهي " + expStr + " · متبقٍ " + remStr +
-                (if (mcon.isNotEmpty()) " · اتصالات " + (if (acon.isEmpty()) "?" else acon) + "/" + mcon else "")
+                (if (mcon.isNotEmpty()) " · اتصالات " + (if (acon.isEmpty()) "?" else acon) + "/" + mcon else "") +
+                (if (geo.isNotEmpty()) "\n" + geo else "")
             val line = "[XHIT] " + base + " | User: " + user + " | Pass: " + pass +
                 " | Expire: " + expStr + " | " + status +
-                (if (si != null) " | TV:" + si.live + " VOD:" + si.vod + " SER:" + si.series else "")
+                (if (si != null) " | TV:" + si.live + " VOD:" + si.vod + " SER:" + si.series else "") +
+                (if (geo.isNotEmpty()) " | " + geo else "")
             synchronized(hitLock) {
                 try {
                     val f = hitsFileObj
@@ -667,7 +672,18 @@ class MainActivity : Activity() {
             "/stalker_portal/server/load.php",
             "/c/server/load.php",
             "/c/portal.php",
-            "/portalstb/"
+            "/ministra/portal.php",
+            "/portalstb/portal.php",
+            "/xstalker.php",
+            "/c/xstalker.php",
+            "/portalott.php",
+            "/magload.php",
+            "/portalcc.php",
+            "/portalmega.php",
+            "/extraportal.php",
+            "/p/portal.php",
+            "/magaccess/portal.php",
+            "/maglove/portal.php"
         )
         for (b in bases) {
             for (ep in eps) {
@@ -723,6 +739,7 @@ class MainActivity : Activity() {
                 return
             }
 
+            val clip = data.optString("ip", "").trim()
             val expMs = parseExp(data.opt("exp_date"))
             val statusRaw = data.opt("status")
             val status = if (statusRaw is String) statusRaw.trim() else ""
@@ -788,6 +805,9 @@ class MainActivity : Activity() {
                 }
             }
 
+            // ── v1.7: دولة الاشتراك (IP العميل من get_profile، وإلا عنوان البوابة) ──
+            val hostOnly = try { portal.substringAfter("://").substringBefore("/") } catch (e: Exception) { portal }
+            val geo = geoOf(if (clip.isNotEmpty()) clip else hostOnly)
             val chPair = channels(portal, ep, mac, token)
             val ch = chPair.first
             val firstCid = chPair.second
@@ -805,18 +825,21 @@ class MainActivity : Activity() {
                 } else ""
                 val genres = si?.genres ?: ""
                 m3uLine = " | M3U: " + m3u.m3uPlus + " | User: " + m3u.user + ":" + m3u.pass + (if (m3u.vpn.isNotEmpty()) " | " + m3u.vpn else "")
-                item = HitItem(mac, "ينتهي " + expStr + " · متبقٍ " + remStr + " · يوزر " + m3u.user, dotFor(remStr), m3u.m3uPlus, m3u.m3u8, m3u.epg, counts, genres, m3u.vpn, m3u.user, m3u.pass, m3u.realHost)
+                item = HitItem(mac, "ينتهي " + expStr + " · متبقٍ " + remStr + " · يوزر " + m3u.user + (if (geo.isNotEmpty()) "\n" + geo else ""), dotFor(remStr), m3u.m3uPlus, m3u.m3u8, m3u.epg, counts, genres, m3u.vpn, m3u.user, m3u.pass, m3u.realHost)
             } else {
                 // ── v1.5: بطاقة كاملة نمط السكانر — عدد القنوات + الأقسام + كل التصنيفات ──
                 val full = portalFull(portal, ep, mac, token, ch)
                 if (full.isNotEmpty()) {
-                    item = HitItem(mac, "ينتهي " + expStr + " · متبقٍ " + remStr + " · 🔐 ماك-فقط", dotFor(remStr), "", "", "", "", full, "", "", "", "")
+                    val unl = unlockCheck(portal, ep, mac, token, firstCid)
+                    val unlS = if (unl.isNotEmpty()) " · " + unl else ""
+                    val geoS = if (geo.isNotEmpty()) "\n" + geo else ""
+                    item = HitItem(mac, "ينتهي " + expStr + " · متبقٍ " + remStr + " · 🔐 ماك-فقط" + unlS + geoS, dotFor(remStr), "", "", "", "", full, "", "", "", "")
                 }
             }
 
             val line = "[HIT] Portal: " + portal + ep + " | MAC: " + mac +
                 " | Expire: " + expStr + " | Remaining: " + remStr +
-                " | Channels: " + ch + extra + m3uLine
+                " | Channels: " + ch + (if (geo.isNotEmpty()) " | " + geo else "") + extra + m3uLine
 
             synchronized(hitLock) {
                 try {
@@ -1113,6 +1136,59 @@ class MainActivity : Activity() {
     }
 
     // ── v1.3: تصنيفات بوابة ماك-فقط (itv get_genres بحقل title) ──
+    // ── v1.7: دولة/مدينة الـIP — فكرة vpnip من Cybermax، عبر freeipapi (مجاني بلا مفتاح) ──
+    private fun geoOf(hostOrIp: String): String {
+        if (hostOrIp.isEmpty()) return ""
+        return try {
+            var ip = hostOrIp.trim()
+            if (ip.count { it == ':' } == 1) ip = ip.substringBefore(":")
+            if (!Regex("\\d+\\.\\d+\\.\\d+\\.\\d+").matches(ip)) {
+                ip = try { InetAddress.getByName(ip).hostAddress ?: "" } catch (e: Exception) { "" }
+                if (ip.isEmpty()) return ""
+            }
+            val r = httpGet("https://freeipapi.com/api/json/" + ip, mapOf("User-Agent" to UA), 7000)
+            if (r.code != 200) return ""
+            val country = d2s(r.body, "countryName")
+            val city = d2s(r.body, "cityName")
+            if (country.isEmpty() || country == "null") return ""
+            "🌍 الدولة: " + country + (if (city.isNotEmpty() && city != "null") " / " + city else "")
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
+    // ── v1.7: اختبار فتح البث للبوابات ماك-فقط (فكرة goruntu من Cybermax) ──
+    private fun unlockCheck(portal: String, ep: String, mac: String, token: String, firstCid: String): String {
+        if (firstCid.isEmpty()) return ""
+        return try {
+            val u = portal + ep + "?type=itv&action=create_link&cmd=" +
+                URLEncoder.encode("ffmpeg http://localhost/ch/" + firstCid + "_", "UTF-8") +
+                "&series=&forced_storage=0&disable_ad=0&download=0&force_ch_link_check=0&JsHttpRequest=1-xml"
+            val r = httpRetry(u, hdr2(portal, mac, token), 8000)
+            if (r.code != 200) "📡 البث: مقفول 🔴"
+            else {
+                var link = ""
+                if (r.body.contains("ffmpeg ")) link = r.body.split("ffmpeg ")[1].split("\"")[0].replace("\\/", "/")
+                if (link.isEmpty() && r.body.contains("\"cmd\":\"")) link = r.body.split("\"cmd\":\"")[1].split("\"")[0].replace("\\/", "/")
+                if (link.isEmpty()) return "📡 البث: مقفول 🔴"
+                val px = pickProxy()
+                val conn = (if (px != null) URL(link).openConnection(px) else URL(link).openConnection()) as HttpURLConnection
+                conn.connectTimeout = 8000
+                conn.readTimeout = 8000
+                conn.instanceFollowRedirects = false
+                conn.setRequestProperty("User-Agent", "Lavf/57.83.100")
+                conn.setRequestProperty("Icy-MetaData", "1")
+                conn.setRequestProperty("Range", "bytes=0-")
+                val code = conn.responseCode
+                try { val ins = conn.inputStream; ins.read(); ins.close() } catch (e: Exception) {}
+                conn.disconnect()
+                if (code == 302 || code == 200) "📡 البث: يشتغل 🟢" else "📡 البث: مقفول 🔴 (" + code + ")"
+            }
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
     private fun portalFull(portal: String, ep: String, mac: String, token: String, chCount: Int): String {
         return try {
             val u = portal + ep + "?type=itv&action=get_genres&JsHttpRequest=1-xml"
