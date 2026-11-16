@@ -46,7 +46,7 @@ class HitItem(val mac: String, val info: String, val dot: String, val m3uPlus: S
 
 class M3uInfo(val user: String, val pass: String, val realHost: String, val m3uPlus: String, val m3u8: String, val epg: String, val vpn: String)
 
-class ServerInfo(val live: Int, val vod: Int, val series: Int, val genres: String)
+class ServerInfo(val live: Int, val vod: Int, val series: Int, val conn: String, val genres: String)
 
 class MainActivity : Activity() {
 
@@ -570,15 +570,18 @@ class MainActivity : Activity() {
             if (m3u != null) {
                 cM3u.incrementAndGet()
                 val si = serverInfo(m3u.realHost, m3u.user, m3u.pass)
-                val counts = if (si != null) si.live.toString() + " قناة · " + si.vod + " فيلم · " + si.series + " مسلسل" else ""
+                val counts = if (si != null) {
+                    (if (si.conn.isNotEmpty()) si.conn + "\n" else "") +
+                        "📺 TV: " + si.live + " · 🎬 أفلام: " + si.vod + " · 📺 مسلسلات: " + si.series
+                } else ""
                 val genres = si?.genres ?: ""
                 m3uLine = " | M3U: " + m3u.m3uPlus + " | User: " + m3u.user + ":" + m3u.pass + (if (m3u.vpn.isNotEmpty()) " | " + m3u.vpn else "")
                 item = HitItem(mac, "ينتهي " + expStr + " · متبقٍ " + remStr + " · يوزر " + m3u.user, dotFor(remStr), m3u.m3uPlus, m3u.m3u8, m3u.epg, counts, genres, m3u.vpn, m3u.user, m3u.pass, m3u.realHost)
             } else {
-                // ── v1.3: بوابة ماك-فقط → التصنيفات الحقيقية من البوابة نفسها ──
-                val g = portalGenres(portal, ep, mac, token)
-                if (g.isNotEmpty()) {
-                    item = HitItem(mac, "ينتهي " + expStr + " · متبقٍ " + remStr + " · 🔐 ماك-فقط", dotFor(remStr), "", "", "", "", "🎬 تصنيفات: " + g, "", "", "", "")
+                // ── v1.5: بطاقة كاملة نمط السكانر — عدد القنوات + الأقسام + كل التصنيفات ──
+                val full = portalFull(portal, ep, mac, token, ch)
+                if (full.isNotEmpty()) {
+                    item = HitItem(mac, "ينتهي " + expStr + " · متبقٍ " + remStr + " · 🔐 ماك-فقط", dotFor(remStr), "", "", "", "", full, "", "", "", "")
                 }
             }
 
@@ -877,15 +880,33 @@ class MainActivity : Activity() {
             }
             if (out.size >= limit) break
         }
-        return out.take(limit).joinToString(" · ")
+        return out.take(limit).joinToString(" ★ ")
     }
 
     // ── v1.3: تصنيفات بوابة ماك-فقط (itv get_genres بحقل title) ──
-    private fun portalGenres(portal: String, ep: String, mac: String, token: String): String {
+    private fun portalFull(portal: String, ep: String, mac: String, token: String, chCount: Int): String {
         return try {
             val u = portal + ep + "?type=itv&action=get_genres&JsHttpRequest=1-xml"
             val r = httpRetry(u, hdr2(portal, mac, token), 10000)
-            if (r.code != 200) "" else titles(r.body, 8)
+            val liveCats = if (r.code == 200) titles(r.body, 80) else ""
+            val vodN = try {
+                val v = httpRetry(portal + ep + "?type=vod&action=get_categories&JsHttpRequest=1-xml", hdr2(portal, mac, token), 10000)
+                if (v.code == 200) v.body.split("title\":\"").size - 1 else 0
+            } catch (e: Exception) {
+                0
+            }
+            val serN = try {
+                val v = httpRetry(portal + ep + "?type=series&action=get_categories&JsHttpRequest=1-xml", hdr2(portal, mac, token), 10000)
+                if (v.code == 200) v.body.split("title\":\"").size - 1 else 0
+            } catch (e: Exception) {
+                0
+            }
+            val sb = StringBuilder()
+            sb.append("📺 القنوات: ").append(chCount)
+            sb.append("\n🎬 الأفلام: ").append(if (vodN > 0) "قسم ✓ (" + vodN + " تصنيف)" else "غير متوفر")
+            sb.append("\n📺 المسلسلات: ").append(if (serN > 0) "قسم ✓ (" + serN + " تصنيف)" else "غير متوفر")
+            if (liveCats.isNotEmpty()) sb.append("\n→ تصنيفات القنوات:\n").append(liveCats)
+            sb.toString()
         } catch (e: Exception) {
             ""
         }
@@ -984,6 +1005,19 @@ class MainActivity : Activity() {
     private fun serverInfo(host: String, user: String, pass: String): ServerInfo? {
         val h = mapOf("User-Agent" to UA)
         return try {
+            // user_info: الحالة + الاتصالات (نمط السكانر الألماني)
+            var conn = ""
+            try {
+                val u0 = httpRetry("http://" + host + "/player_api.php?username=" +
+                    URLEncoder.encode(user, "UTF-8") + "&password=" + URLEncoder.encode(pass, "UTF-8"), h, 10000)
+                if (u0.code == 200 && u0.body.contains("\"user_info\"")) {
+                    val st = d2s(u0.body, "status")
+                    val acon = d2s(u0.body, "active_cons")
+                    val mcon = d2s(u0.body, "max_connections")
+                    if (st.isNotEmpty()) conn = "🔗 الاتصالات: " + (if (acon.isEmpty()) "?" else acon) + "/" + (if (mcon.isEmpty()) "?" else mcon) + " · " + st
+                }
+            } catch (e: Exception) {
+            }
             val base = "http://" + host + "/player_api.php?username=" + user + "&password=" + pass + "&action="
             val liveB = httpRetry(base + "get_live_streams", h, 10000)
             val vodB = httpRetry(base + "get_vod_streams", h, 10000)
@@ -992,11 +1026,16 @@ class MainActivity : Activity() {
             val vod = if (vodB.code == 200) vodB.body.split("stream_id").size - 1 else 0
             val ser = if (serB.code == 200) serB.body.split("series_id").size - 1 else 0
             val catBase = "http://" + host + "/player_api.php?username=" + user + "&password=" + pass + "&action="
-            val g1 = titles(httpRetry(catBase + "get_live_categories", h, 10000).body, 8)
-            val g2 = titles(httpRetry(catBase + "get_vod_categories", h, 10000).body, 8)
-            val g3 = titles(httpRetry(catBase + "get_series_categories", h, 10000).body, 8)
-            ServerInfo(live, vod, ser,
-                "🎬 قنوات: " + g1 + "\n🎞 أفلام: " + g2 + "\n📺 مسلسلات: " + g3)
+            val g1 = titles(httpRetry(catBase + "get_live_categories", h, 10000).body, 80)
+            val g2 = titles(httpRetry(catBase + "get_vod_categories", h, 10000).body, 80)
+            val g3 = titles(httpRetry(catBase + "get_series_categories", h, 10000).body, 80)
+            var sb = StringBuilder()
+            sb.append("📺 TV: ").append(live).append(" · 🎬 أفلام: ").append(vod).append(" · 📺 مسلسلات: ").append(ser)
+            if (conn.isNotEmpty()) sb.append("\n").append(conn)
+            sb.append("\n→ تصنيفات القنوات:\n").append(g1)
+            if (g2.isNotEmpty()) sb.append("\n→ تصنيفات الأفلام:\n").append(g2)
+            if (g3.isNotEmpty()) sb.append("\n→ تصنيفات المسلسلات:\n").append(g3)
+            ServerInfo(live, vod, ser, conn, sb.toString())
         } catch (e: Exception) {
             null
         }
