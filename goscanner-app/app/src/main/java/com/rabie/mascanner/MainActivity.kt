@@ -102,6 +102,8 @@ class MainActivity : Activity() {
     private var bypassHost: String? = null
     private var bypassOn = false
     private var discoverFound = false
+    private val variantMem = HashMap<String, Int>()
+    private val variantLock = Any()
     private val cM3u = AtomicLong()
     private val cExpFiltered = AtomicLong()
 
@@ -349,7 +351,7 @@ class MainActivity : Activity() {
             return
         }
         val t = etThreads.text?.toString()?.trim()?.toIntOrNull() ?: 50
-        threadsCount = if (t < 1) 50 else if (t > 100) 100 else t
+        threadsCount = if (t < 1) 8 else if (t > 100) 100 else t
         if (lowNet && threadsCount > 5) {
             threadsCount = 5
             toast("🐢 وضع النت الضعيف: الخيوط حُدّت إلى 5")
@@ -798,22 +800,41 @@ class MainActivity : Activity() {
     private fun scanOne(mac: String, portal: String, ep: String) {
         cProcessed.incrementAndGet()
         try {
-            val token = handshake(portal, ep, mac)
-            val root: JSONObject = try {
-                profile(portal, ep, mac, token)
-            } catch (se: ScanEx) {
-                cNet.incrementAndGet()
-                addReason(mac, "profile", se.message)
-                return
-            } catch (je: JSONException) {
-                cStruct.incrementAndGet()
-                addReason(mac, "profile", "bad json")
-                return
-            } catch (io: Exception) {
-                cNet.incrementAndGet()
-                addReason(mac, "profile", io.message)
+            // ── v2.0: حلقة الأنماط — 4 صيغ توثيق، والناجحة تتحفظ لكل بوابة ──
+            val memKey = portal + "|" + ep
+            val startV = synchronized(variantLock) { variantMem[memKey] ?: 0 }
+            var token = ""
+            var usedV = -1
+            var lastErr = ""
+            var root: JSONObject? = null
+            for (i in 0 until 4) {
+                val v = (startV + i) % 4
+                try {
+                    val tk = handshakeV(portal, ep, mac, v)
+                    val pr = profileV(portal, ep, mac, tk, v)
+                    token = tk
+                    root = pr
+                    usedV = v
+                    if (i > 0) addLog("[✓] نمط التوثيق " + (v + 1) + "/4 نجح مع هذه البوابة — سيتفادى للبقية")
+                    break
+                } catch (se: ScanEx) {
+                    lastErr = se.message ?: "err"
+                } catch (je: JSONException) {
+                    lastErr = "bad json"
+                } catch (io: Exception) {
+                    lastErr = io.message ?: "err"
+                }
+            }
+            if (usedV < 0 || root == null) {
+                if (lastErr == "token not found") {
+                    cAuth.incrementAndGet()
+                } else {
+                    cNet.incrementAndGet()
+                    addReason(mac, "auth", lastErr)
+                }
                 return
             }
+            synchronized(variantLock) { variantMem[memKey] = usedV }
 
             var data: JSONObject? = root.optJSONObject("js")
             if (data == null) data = root.optJSONObject("data")
@@ -1046,6 +1067,54 @@ class MainActivity : Activity() {
         return m
     }
 
+    // ── v2.0: محرك الأنماط — سلطة سكريبت Cybermax داخل التطبيق ──
+    // 0=كلاسيكي · 1=White (توكن ثابت+prehash) · 2=Ultra (كوكيز+prehash=0) · 3=RealBlue/Stalker (بروفايل MAG250 الكامل)
+    private fun handshakeV(portal: String, ep: String, mac: String, v: Int): String {
+        val m = URLEncoder.encode(mac.uppercase(Locale.US), "UTF-8")
+        val u = when (v) {
+            1 -> portal + ep + "?type=stb&action=handshake&token=1E3A20C221DF6C3EC477C30DBEFE8F07&prehash=6b1e45cc169162c9e876a29707236e54c24631db&JsHttpRequest=1-xml"
+            2 -> portal + ep + "?type=stb&action=handshake&token=&prehash=0&mac=" + m + "&JsHttpRequest=1-xml"
+            else -> portal + ep + "?type=stb&action=handshake&mac=" + m + "&token=&prehash=false&JsHttpRequest=1-xml"
+        }
+        val hdrs: Map<String, String> = when (v) {
+            2 -> mapOf(
+                "User-Agent" to UA,
+                "Referer" to portal + "/c/",
+                "Accept" to "application/json,application/javascript,text/javascript,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Cookie" to "PHPSESSID=null; mac=" + m + "; stb_lang=en; timezone=Europe%2FParis; adid=90315b70fdf800b5c5181de836a8ec4d",
+                "Content-Type" to "text/javascript;charset=UTF-8",
+                "X-User-Agent" to "Model: MAG254; Link: Ethernet,WiFi",
+                "Connection" to "keep-alive"
+            )
+            3 -> mapOf(
+                "User-Agent" to UA,
+                "Referer" to portal + "/c/",
+                "Accept" to "application/json,application/javascript,text/javascript,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Cookie" to "mac=" + m + "; stb_lang=en; timezone=Europe%2FParis",
+                "X-User-Agent" to "Model: MAG250; Link: WiFi",
+                "Cache-Control" to "no-cache",
+                "Connection" to "Keep-Alive"
+            )
+            else -> hdr1(portal, mac)
+        }
+        val r = httpRetry(u, hdrs, 8000)
+        if (r.code != 200) throw ScanEx("status code: " + r.code)
+        val root = JSONObject(r.body)
+        var token = ""
+        val jsObj = root.optJSONObject("js")
+        if (jsObj != null) token = jsObj.optString("token", "").trim()
+        if (token.isEmpty()) token = root.optString("token", "").trim()
+        if (token.isEmpty()) throw ScanEx("token not found")
+        return token
+    }
+
+    private fun profileV(portal: String, ep: String, mac: String, token: String, v: Int): JSONObject {
+        return when (v) {
+            3 -> profileFull(portal, ep, mac, token)
+            else -> profile(portal, ep, mac, token)
+        }
+    }
+
     private fun handshake(portal: String, ep: String, mac: String): String {
         val u = portal + ep + "?type=stb&action=handshake&mac=" +
             URLEncoder.encode(mac.uppercase(Locale.US), "UTF-8") +
@@ -1171,21 +1240,26 @@ class MainActivity : Activity() {
         return b.joinToString("") { "%02x".format(it) }
     }
 
+    private fun profileFull(portal: String, ep: String, mac: String, token: String): JSONObject {
+        val sn = md5(mac).uppercase(Locale.US)
+        val snCut = sn.substring(0, 13)
+        val dev = sha256(mac).uppercase(Locale.US)
+        val ts = (System.currentTimeMillis() / 1000).toString()
+        val ver = "ImageDescription:%200.2.18-r22-pub-270;%20ImageDate:%20Tue%20Dec%2019%2011:33:53%20EET%202017;%20PORTAL%20version:%205.6.6;%20API%20Version:%20JS%20API%20version:%20328;%20STB%20API%20version:%20134;%20Player%20Engine%20version:%200x566"
+        val metrics = "{\"mac\":\"" + mac + "\",\"sn\":\"" + snCut + "\",\"model\":\"MAG270\",\"type\":\"STB\",\"uid\":\"" + dev + "\",\"random\":\"null\"}"
+        val u = portal + ep + "?type=stb&action=get_profile&hd=1&ver=" + ver +
+            "&num_banks=2&sn=" + snCut + "&stb_type=MAG270&client_type=STB&image_version=0.2.18&video_out=hdmi&device_id=" + dev +
+            "&device_id2=" + dev + "&signature=" + URLEncoder.encode("OaRqL9kBdR5qnMXL+h6b+i8yeRs9/xWXeKPXpI48VVE=", "UTF-8") +
+            "&auth_second_step=1&hw_version=1.7-BD-00&not_valid_token=0&metrics=" + URLEncoder.encode(metrics, "UTF-8") +
+            "&timestamp=" + ts + "&api_signature=262&prehash=efd15c16dc497e0839ff5accfdc6ed99c32c4e2a&JsHttpRequest=1-xml"
+        val r = httpRetry(u, hdr2(portal, mac, token), 8000)
+        if (r.code != 200) throw ScanEx("status code: " + r.code)
+        return JSONObject(r.body)
+    }
+
     private fun profileMAG270(portal: String, ep: String, mac: String, token: String): JSONObject? {
         return try {
-            val sn = md5(mac).uppercase(Locale.US)
-            val snCut = sn.substring(0, 13)
-            val dev = sha256(mac).uppercase(Locale.US)
-            val ts = (System.currentTimeMillis() / 1000).toString()
-            val ver = "ImageDescription:%200.2.18-r22-pub-270;%20ImageDate:%20Tue%20Dec%2019%2011:33:53%20EET%202017;%20PORTAL%20version:%205.6.6;%20API%20Version:%20JS%20API%20version:%20328;%20STB%20API%20version:%20134;%20Player%20Engine%20version:%200x566"
-            val metrics = "{\"mac\":\"" + mac + "\",\"sn\":\"" + snCut + "\",\"model\":\"MAG270\",\"type\":\"STB\",\"uid\":\"" + dev + "\",\"random\":\"null\"}"
-            val u = portal + ep + "?type=stb&action=get_profile&hd=1&ver=" + ver +
-                "&num_banks=2&sn=" + snCut + "&stb_type=MAG270&client_type=STB&image_version=0.2.18&video_out=hdmi&device_id=" + dev +
-                "&device_id2=" + dev + "&signature=" + URLEncoder.encode("OaRqL9kBdR5qnMXL+h6b+i8yeRs9/xWXeKPXpI48VVE=", "UTF-8") +
-                "&auth_second_step=1&hw_version=1.7-BD-00&not_valid_token=0&metrics=" + URLEncoder.encode(metrics, "UTF-8") +
-                "&timestamp=" + ts + "&api_signature=262&prehash=efd15c16dc497e0839ff5accfdc6ed99c32c4e2a&JsHttpRequest=1-xml"
-            val r = httpRetry(u, hdr2(portal, mac, token), 8000)
-            if (r.code != 200) null else JSONObject(r.body).optJSONObject("js")
+            profileFull(portal, ep, mac, token).optJSONObject("js")
         } catch (e: Exception) {
             null
         }
@@ -1478,7 +1552,7 @@ class MainActivity : Activity() {
     // ── v1.2: توليد ماكات عشوائية (للبوابات الخاصة بك) ──
     private fun genMacs() {
         val n0 = etGenCount.text?.toString()?.trim()?.toIntOrNull() ?: 20
-        val n = if (n0 < 1) 20 else if (n0 > 500) 500 else n0
+        val n = if (n0 < 1) 20 else if (n0 > 2000) 2000 else n0
         val sb = StringBuilder()
         val r = java.util.Random()
         for (i in 1..n) {
