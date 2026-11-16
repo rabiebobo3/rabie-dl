@@ -574,6 +574,12 @@ class MainActivity : Activity() {
                 val genres = si?.genres ?: ""
                 m3uLine = " | M3U: " + m3u.m3uPlus + " | User: " + m3u.user + ":" + m3u.pass + (if (m3u.vpn.isNotEmpty()) " | " + m3u.vpn else "")
                 item = HitItem(mac, "ينتهي " + expStr + " · متبقٍ " + remStr + " · يوزر " + m3u.user, dotFor(remStr), m3u.m3uPlus, m3u.m3u8, m3u.epg, counts, genres, m3u.vpn, m3u.user, m3u.pass, m3u.realHost)
+            } else {
+                // ── v1.3: بوابة ماك-فقط → التصنيفات الحقيقية من البوابة نفسها ──
+                val g = portalGenres(portal, ep, mac, token)
+                if (g.isNotEmpty()) {
+                    item = HitItem(mac, "ينتهي " + expStr + " · متبقٍ " + remStr + " · 🔐 ماك-فقط", dotFor(remStr), "", "", "", "", "🎬 تصنيفات: " + g, "", "", "", "")
+                }
             }
 
             val line = "[HIT] Portal: " + portal + ep + " | MAC: " + mac +
@@ -750,6 +756,20 @@ class MainActivity : Activity() {
     }
 
     private fun channels(portal: String, ep: String, mac: String, token: String): Pair<Int, String> {
+        // ── v1.3: نمط سكريبتك أولاً (type=itv + total_items) — يعمل على بوابات ماك-فقط ──
+        try {
+            val u1 = portal + ep + "?type=itv&action=get_all_channels&force_ch_link_check=&JsHttpRequest=1-xml"
+            val r1 = httpRetry(u1, hdr2(portal, mac, token), 12000)
+            if (r1.code == 200 && r1.body.contains("total_items")) {
+                val total = r1.body.split("\"total_items\":")[1].split(",")[0].trim().toIntOrNull() ?: 0
+                var firstId = ""
+                if (r1.body.contains("\"data\":[{\"id\":\"")) {
+                    firstId = r1.body.split("\"data\":[{\"id\":\"")[1].split("\"")[0]
+                }
+                if (total > 0) return Pair(total, firstId)
+            }
+        } catch (e: Exception) {
+        }
         return try {
             val u = portal + ep + "?type=stb&action=get_all_channels&JsHttpRequest=1-xml"
             val r = httpRetry(u, hdr2(portal, mac, token), 8000)
@@ -837,6 +857,17 @@ class MainActivity : Activity() {
         return out.take(limit).joinToString(" · ")
     }
 
+    // ── v1.3: تصنيفات بوابة ماك-فقط (itv get_genres بحقل title) ──
+    private fun portalGenres(portal: String, ep: String, mac: String, token: String): String {
+        return try {
+            val u = portal + ep + "?type=itv&action=get_genres&JsHttpRequest=1-xml"
+            val r = httpRetry(u, hdr2(portal, mac, token), 10000)
+            if (r.code != 200) "" else titles(r.body, 8)
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
     // ── v1.2: استخراج M3U/Xtream عند الـHIT (منطق سكريبتك) ──
     private fun extractM3u(portal: String, ep: String, mac: String, token: String, firstCid: String): M3uInfo? {
         var link = ""
@@ -874,6 +905,8 @@ class MainActivity : Activity() {
             }
         }
         if (link.isEmpty()) return null
+        // ── v1.3: روابط play/live.php?mac=... تعني بوابة ماك-فقط — لا يوجد Xtream ──
+        if (link.contains("mac=") || link.contains("/play/")) return null
         var user = ""
         var pass = ""
         var host = ""
@@ -891,6 +924,15 @@ class MainActivity : Activity() {
         } catch (e: Exception) {
         }
         if (user.isEmpty() || pass.isEmpty() || host.isEmpty()) return null
+        // ── v1.3: تحقق أن اليوزر/الباس صحيحان فعلاً قبل إعطاء روابط ──
+        try {
+            val v = httpRetry("http://" + host + "/player_api.php?username=" +
+                URLEncoder.encode(user, "UTF-8") + "&password=" + URLEncoder.encode(pass, "UTF-8"),
+                mapOf("User-Agent" to UA), 8000)
+            if (v.code != 200 || !v.body.contains("\"user_info\"") || v.body.contains("\"status\":\"Disabled\"")) return null
+        } catch (e: Exception) {
+            return null
+        }
         val m3uPlus = "http://" + host + "/get.php?username=" + user + "&password=" + pass + "&type=m3u_plus"
         val m3u8 = m3uPlus + "&output=m3u8"
         val epg = "http://" + host + "/xmltv.php?username=" + user + "&password=" + pass + "&type=xml_plus"
