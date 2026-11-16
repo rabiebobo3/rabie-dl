@@ -87,6 +87,7 @@ class MainActivity : Activity() {
 
     // ── v1.2 إضافات ──
     private lateinit var cbGeo: android.widget.CheckBox
+    private lateinit var cbLowNet: android.widget.CheckBox
     private lateinit var etMinDays: EditText
     private lateinit var btnGenMacs: Button
     private lateinit var btnXtream: Button
@@ -95,6 +96,12 @@ class MainActivity : Activity() {
     private val proxyIdx = AtomicInteger(0)
     private var minDays = 0
     private var geoOn = false
+    private var lowNet = false
+
+    @Volatile
+    private var bypassHost: String? = null
+    private var bypassOn = false
+    private var discoverFound = false
     private val cM3u = AtomicLong()
     private val cExpFiltered = AtomicLong()
 
@@ -135,6 +142,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        System.setProperty("sun.net.http.allowRestrictedHeaders", "true")
 
         screenHome = findViewById(R.id.screenHome)
         screenRunning = findViewById(R.id.screenRunning)
@@ -191,6 +199,7 @@ class MainActivity : Activity() {
             toast("⏹️ جاري الإيقاف — النتائج المحفوظة تبقى")
         }
 
+        cbLowNet = findViewById(R.id.cbLowNet)
         cbGeo = findViewById(R.id.cbGeo)
         etMinDays = findViewById(R.id.etMinDays)
         btnGenMacs = findViewById(R.id.btnGenMacs)
@@ -341,6 +350,10 @@ class MainActivity : Activity() {
         }
         val t = etThreads.text?.toString()?.trim()?.toIntOrNull() ?: 50
         threadsCount = if (t < 1) 50 else if (t > 100) 100 else t
+        if (lowNet && threadsCount > 5) {
+            threadsCount = 5
+            toast("🐢 وضع النت الضعيف: الخيوط حُدّت إلى 5")
+        }
         proxyObj = null
         proxyList.clear()
         for (ln in (etProxy.text?.toString() ?: "").split("\n")) {
@@ -356,6 +369,10 @@ class MainActivity : Activity() {
         minDays = etMinDays.text?.toString()?.trim()?.toIntOrNull() ?: 0
         if (minDays < 0) minDays = 0
         geoOn = cbGeo.isChecked
+        lowNet = cbLowNet.isChecked
+        bypassHost = null
+        bypassOn = false
+        discoverFound = false
         totalValid = parsed.first.size
         invalidCount = parsed.second
 
@@ -412,6 +429,10 @@ class MainActivity : Activity() {
         }
         val t = etThreads.text?.toString()?.trim()?.toIntOrNull() ?: 10
         threadsCount = if (t < 1) 10 else if (t > 100) 100 else t
+        if (lowNet && threadsCount > 5) {
+            threadsCount = 5
+            toast("🐢 وضع النت الضعيف: الخيوط حُدّت إلى 5")
+        }
         proxyObj = null
         proxyList.clear()
         for (ln in (etProxy.text?.toString() ?: "").split("\n")) {
@@ -426,6 +447,9 @@ class MainActivity : Activity() {
         }
         geoOn = false
         minDays = 0
+        lowNet = cbLowNet.isChecked
+        bypassHost = null
+        bypassOn = false
         totalValid = entries.size
         invalidCount = 0
 
@@ -585,7 +609,7 @@ class MainActivity : Activity() {
                 return
             }
             val remStr = if (expL > 0) calcRemaining(expL * 1000) else "N/A"
-            val si = serverInfo(hostPart, user, pass)
+            val si = if (lowNet) null else serverInfo(hostPart, user, pass)
             val counts = if (si != null) {
                 (if (si.conn.isNotEmpty()) si.conn + "\n" else "") +
                     "📺 TV: " + si.live + " · 🎬 أفلام: " + si.vod + " · 📺 مسلسلات: " + si.series
@@ -599,7 +623,7 @@ class MainActivity : Activity() {
                 "&password=" + URLEncoder.encode(pass, "UTF-8") + "&type=xml_plus"
             val trial = if (isTrial == "1") " · تجريبي" else ""
             // ── v1.7: دولة السيرفر نفسه ──
-            val geo = geoOf(hostPart)
+            val geo = if (lowNet) "" else geoOf(hostPart)
             val info = "✅ Active" + trial + " · ينتهي " + expStr + " · متبقٍ " + remStr +
                 (if (mcon.isNotEmpty()) " · اتصالات " + (if (acon.isEmpty()) "?" else acon) + "/" + mcon else "") +
                 (if (geo.isNotEmpty()) "\n" + geo else "")
@@ -638,6 +662,43 @@ class MainActivity : Activity() {
             val found = discover(portal)
             base = found.first
             endpoint = found.second
+
+            // ── v1.9: عجلة الاحتياط — تشخيص الحجب عند فشل الكشف ──
+            if (!discoverFound) {
+                addLog("[*] لا مسار يجاوب — تشخيص الحجب (v1.9)...")
+                val hostPort = portal.substringAfter("://").substringBefore("/")
+                val host = hostPort.substringBefore(":")
+                val port = hostPort.substringAfter(":", "")
+                val sysIP = try { InetAddress.getByName(host).hostAddress ?: "" } catch (e: Exception) { "" }
+                val dohIP = dohResolve(host)
+                if (dohIP == null) {
+                    addLog("[-] DoH ما جاوب — لا يمكن تجاوز")
+                } else if (sysIP == dohIP) {
+                    addLog("[*] DNS سليم (" + sysIP + ") — لا حجب اسم؛ السيرفر يخاوي فعلاً")
+                } else {
+                    addLog("[⚠️] DNS مزوّر! الشركة: " + (if (sysIP.isEmpty()) "?" else sysIP) + " · الحقيقي: " + dohIP)
+                    val testBase = "http://" + dohIP + (if (port.isNotEmpty() && port != "80") ":" + port else "")
+                    bypassHost = hostPort
+                    val tr: Rresp? = try {
+                        httpGet(testBase + "/server/load.php?type=stb&action=handshake&JsHttpRequest=1-xml",
+                            hdr1(portal, "00:1A:79:00:00:00"), 7000)
+                    } catch (e: Exception) { null }
+                    if (tr != null && (tr.code == 200 || tr.code == 401 || tr.code == 512)) {
+                        val f2 = discover(testBase)
+                        base = f2.first
+                        endpoint = f2.second
+                        bypassOn = true
+                        addLog("[✓] التجاوز نجح — الفحص كامل عبر الـIP " + dohIP + " (Host: " + hostPort + ")")
+                        handler.post {
+                            tvEndpointHint.text = "⚠️🟢 محجوب عندك — التجاوز بالـIP مفعّل: " + base + endpoint
+                            tvEndpointHint.visibility = View.VISIBLE
+                        }
+                    } else {
+                        bypassHost = null
+                        addLog("[🔴] حتى بالـIP الحقيقي (" + dohIP + ") ما جاوب — السيرفر ميت فعلاً أو محجوب بالـIP")
+                    }
+                }
+            }
             handler.post {
                 tvEndpointHint.text = "✓ المسار المكتشف تلقائياً: " + base + endpoint
                 tvEndpointHint.visibility = View.VISIBLE
@@ -671,6 +732,22 @@ class MainActivity : Activity() {
             addLog("[-] " + (e.message ?: e.toString()))
         } finally {
             handler.post { finishRun() }
+        }
+    }
+
+    // ── v1.9: DNS مشفر عبر 8.8.8.8 مباشرة (بلا DNS الشركة) ──
+    private fun dohResolve(host: String): String? {
+        if (host.isEmpty()) return null
+        return try {
+            val u = "https://8.8.8.8/resolve?name=" + URLEncoder.encode(host, "UTF-8") + "&type=A"
+            val r = httpGet(u, mapOf("User-Agent" to UA, "Accept" to "application/dns-json"), 8000)
+            if (r.code != 200 || !r.body.contains("\"Answer\"")) null
+            else {
+                val seg = r.body.substringAfter("\"Answer\"").substringBefore("]")
+                Regex("\"data\":\"([0-9.]+)\"").find(seg)?.groupValues?.get(1)
+            }
+        } catch (e: Exception) {
+            null
         }
     }
 
@@ -708,6 +785,7 @@ class MainActivity : Activity() {
                 }
                 if (r != null && (r.code == 200 || r.code == 401 || r.code == 512)) {
                     addLog("[✓] Found working endpoint: " + b + ep)
+                    discoverFound = true
                     return Pair(b, ep)
                 }
             }
@@ -821,7 +899,7 @@ class MainActivity : Activity() {
 
             // ── v1.7: دولة الاشتراك (IP العميل من get_profile، وإلا عنوان البوابة) ──
             val hostOnly = try { portal.substringAfter("://").substringBefore("/") } catch (e: Exception) { portal }
-            val geo = geoOf(if (clip.isNotEmpty()) clip else hostOnly)
+            val geo = if (lowNet) "" else geoOf(if (clip.isNotEmpty()) clip else hostOnly)
             val chPair = channels(portal, ep, mac, token)
             val ch = chPair.first
             val firstCid = chPair.second
@@ -838,28 +916,29 @@ class MainActivity : Activity() {
             }
             if (m3u != null) {
                 cM3u.incrementAndGet()
-                val si = serverInfo(m3u.realHost, m3u.user, m3u.pass)
+                val si = if (lowNet) null else serverInfo(m3u.realHost, m3u.user, m3u.pass)
                 val counts = if (si != null) {
                     (if (si.conn.isNotEmpty()) si.conn + "\n" else "") +
                         "📺 TV: " + si.live + " · 🎬 أفلام: " + si.vod + " · 📺 مسلسلات: " + si.series
                 } else ""
                 val genres = si?.genres ?: ""
                 m3uLine = " | M3U: " + m3u.m3uPlus + " | User: " + m3u.user + ":" + m3u.pass + (if (m3u.vpn.isNotEmpty()) " | " + m3u.vpn else "")
-                item = HitItem(mac, "ينتهي " + expStr + " · متبقٍ " + remStr + " · يوزر " + m3u.user + (if (geo.isNotEmpty()) "\n" + geo else ""), dotFor(remStr), m3u.m3uPlus, m3u.m3u8, m3u.epg, counts, genres, m3u.vpn, m3u.user, m3u.pass, m3u.realHost)
+                item = HitItem(mac, "ينتهي " + expStr + " · متبقٍ " + remStr + " · يوزر " + m3u.user + (if (bypassOn) " · ⚠️🟢 تجاوز ✓" else "") + (if (geo.isNotEmpty()) "\n" + geo else ""), dotFor(remStr), m3u.m3uPlus, m3u.m3u8, m3u.epg, counts, genres, m3u.vpn, m3u.user, m3u.pass, m3u.realHost)
             } else {
                 // ── v1.5: بطاقة كاملة نمط السكانر — عدد القنوات + الأقسام + كل التصنيفات ──
-                val full = portalFull(portal, ep, mac, token, ch)
+                val full = if (lowNet) "" else portalFull(portal, ep, mac, token, ch)
                 if (full.isNotEmpty()) {
-                    val unl = unlockCheck(portal, ep, mac, token, firstCid)
+                    val unl = if (lowNet) "" else unlockCheck(portal, ep, mac, token, firstCid)
+                    val bypS = if (bypassOn) " · ⚠️🟢 تجاوز الحجب ✓" else ""
                     val unlS = if (unl.isNotEmpty()) " · " + unl else ""
                     val geoS = if (geo.isNotEmpty()) "\n" + geo else ""
-                    item = HitItem(mac, "ينتهي " + expStr + " · متبقٍ " + remStr + " · 🔐 ماك-فقط" + unlS + geoS, dotFor(remStr), "", "", "", "", full, "", "", "", "")
+                    item = HitItem(mac, "ينتهي " + expStr + " · متبقٍ " + remStr + " · 🔐 ماك-فقط" + unlS + bypS + geoS, dotFor(remStr), "", "", "", "", full, "", "", "", "")
                 }
             }
 
             val line = "[HIT] Portal: " + portal + ep + " | MAC: " + mac +
                 " | Expire: " + expStr + " | Remaining: " + remStr +
-                " | Channels: " + ch + (if (geo.isNotEmpty()) " | " + geo else "") + extra + m3uLine
+                " | Channels: " + ch + (if (geo.isNotEmpty()) " | " + geo else "") + (if (bypassOn) " | ⚠️BYPASS" else "") + extra + m3uLine
 
             synchronized(hitLock) {
                 try {
@@ -912,6 +991,8 @@ class MainActivity : Activity() {
             conn.readTimeout = timeoutMs
             conn.instanceFollowRedirects = true
             for ((k, v) in headers) conn.setRequestProperty(k, v)
+            val bh = bypassHost
+            if (bh != null) conn.setRequestProperty("Host", bh)
             val code = conn.responseCode
             val st = if (code in 200..399) conn.inputStream else conn.errorStream
             val body = if (st != null) st.bufferedReader(Charsets.UTF_8).use { it.readText() } else ""
