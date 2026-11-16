@@ -843,14 +843,37 @@ class MainActivity : Activity() {
         }
     }
 
+    // ── v1.4: فك ترميز \uXXXX في أسماء التصنيفات ──
+    private fun unescapeJson(s0: String): String {
+        val s = s0.replace("\\/", "/")
+        val sb = StringBuilder()
+        var i = 0
+        while (i < s.length) {
+            if (i + 5 < s.length && s[i] == '\\' && s[i + 1] == 'u') {
+                val code = s.substring(i + 2, i + 6).toIntOrNull(16)
+                if (code != null && code in 32..0xFFFF) {
+                    sb.append(code.toChar())
+                    i += 6
+                    continue
+                }
+            }
+            sb.append(s[i])
+            i++
+        }
+        return sb.toString()
+    }
+
     private fun titles(body: String, limit: Int): String {
         val out = ArrayList<String>()
         for (key in arrayOf("category_name\":\"", "title\":\"")) {
             val parts = body.split(key)
             for (i in 1 until parts.size) {
                 if (out.size >= limit) break
-                val t = parts[i].split("\"")[0].replace("\\/", "/").trim()
-                if (t.isNotEmpty() && !t.contains("{") && !t.contains("}")) out.add(t)
+                val t = unescapeJson(parts[i].split("\"")[0]).trim()
+                if (t.isEmpty() || t == "All") continue
+                if (t.contains("{") || t.contains("}")) continue
+                if (out.contains(t)) continue
+                out.add(t)
             }
             if (out.size >= limit) break
         }
